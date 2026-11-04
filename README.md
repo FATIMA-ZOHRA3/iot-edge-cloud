@@ -1,63 +1,103 @@
 # IoT Edge–Cloud avec capteurs simulés
 
-Prototype d'une architecture IoT comparant un traitement **Edge** (local) et un traitement **Cloud simulé**, avec des capteurs simulés en Python.
+Comparaison de deux chemins pour des mesures de capteurs simulés :
 
-## Architecture visée
+- **A, cloud-only** : l'Edge relaie tout au Cloud.
+- **B, edge-cloud** : l'Edge décide localement et n'envoie au Cloud qu'un flux réduit.
 
-```
-Python (capteurs simulés) → MQTT/Mosquitto → traitements Edge et Cloud simulé → InfluxDB → Grafana
-```
+Tout tourne dans des conteneurs Docker, avec deux brokers MQTT (un local, un « cloud »).
 
-Node-RED est ajouté en option, après validation de la chaîne principale.
-
-> Le délai ajouté au scénario « Cloud simulé » (par défaut 100 ms) est **artificiel** : ce n'est pas une mesure réelle d'Internet. Il doit être mentionné dans les résultats.
+> Le délai du Cloud est **artificiel** : il doit être signalé comme tel dans tous les résultats.
 
 ## Structure
 
 ```
-simulator/   capteurs simulés (sensors.py)
-processor/   traitements Edge et Cloud simulé (à venir)
-results/     exports et mesures des essais
-compose.yaml configuration Docker Compose (Mosquitto)
-mosquitto.conf configuration du broker (essais locaux uniquement)
+simulator/            capteurs simulés (sensors.py)
+edge/                 service Edge (processor.py)
+cloud/                service Cloud simulé (consumer.py)
+dashboard/            dashboards Grafana exportés (JSON)
+docs/                 architecture, plan de travail, rapport
+results/              mesures des tests (CSV, non versionnés)
+benchmark.py          mesure messages, octets et latence sur les deux brokers
+docker-compose.yml    brokers et services
+mosquitto.conf        configuration des brokers (essais locaux uniquement)
+.env.example          variables à copier dans .env
 ```
+
+Voir `docs/ARCHITECTURE.md` (schéma, topics, formats) et `docs/TASKS.md` (plan sur 4 semaines).
 
 ## Prérequis
 
-- Python 3
-- Docker et Docker Compose (ou Mosquitto installé directement)
+Docker (avec Docker Compose), Python 3, Git.
 
-## Démarrage rapide
-
-### 1. Capteur simulé seul
+## Démarrage
 
 ```bash
-python simulator/sensors.py      # ou python3 sur Ubuntu
+docker compose up -d --build
+docker compose ps
+docker compose logs -f edge cloud
 ```
 
-Résultat attendu : une ligne JSON toutes les 2 secondes (`sensor_id`, `timestamp`, `temperature`, `humidity`, `pressure`). `Ctrl+C` pour arrêter.
+Cinq services : `mosquitto-edge`, `mosquitto-cloud`, `simulator`, `edge`, `cloud`.
+Arrêter : `docker compose down`.
 
-### 2. Broker Mosquitto
+### Choisir le scénario
+
+Scénario B, edge-cloud (par défaut) :
 
 ```bash
 docker compose up -d
-docker compose ps
-docker compose logs mosquitto
 ```
 
-> La configuration de `mosquitto.conf` autorise les connexions anonymes : elle est réservée aux essais locaux et ne doit pas être exposée à Internet.
+Scénario A, cloud-only :
+
+```powershell
+$env:EDGE_MODE="forward"; docker compose up -d --force-recreate edge
+```
+
+(Linux ou macOS : `EDGE_MODE=forward docker compose up -d --force-recreate edge`.)
+Pour revenir au scénario B : `$env:EDGE_MODE="reduce"` puis la même commande.
+
+Nombre de capteurs, délai Cloud, taille des groupes : copier `.env.example` en `.env`
+et modifier `N_SENSORS`, `CLOUD_DELAY_SECONDS`, `EDGE_BATCH`.
+
+### Voir les messages
+
+```bash
+docker compose exec mosquitto-edge mosquitto_sub -h localhost -t "iot/#" -v
+docker compose exec mosquitto-cloud mosquitto_sub -h localhost -t "iot/#" -v
+```
+
+### Benchmark
+
+```bash
+python -m pip install -r requirements.txt
+python benchmark.py 120 edge-cloud-1-capteur
+```
+
+Les services doivent tourner. Un CSV est écrit dans `results/`. Lancer le même test
+dans chaque scénario, avec 1, 5 puis 10 capteurs.
+
+### Scénario de coupure du Cloud
+
+```bash
+docker compose stop mosquitto-cloud
+docker compose logs -f edge
+docker compose start mosquitto-cloud
+```
+
+En mode `reduce`, l'Edge continue ses décisions locales (`iot/edge/local`), garde les
+messages du lien montant en mémoire et les envoie à la reconnexion.
+
+### Développer hors Docker
+
+```bash
+docker compose up -d mosquitto-edge mosquitto-cloud
+python simulator/sensors.py
+```
+
+(dans d'autres terminaux : `python edge/processor.py` et `python cloud/consumer.py`)
 
 ## Avancement
 
-- [x] Capteur simulé (affichage console)
-- [x] Configuration Mosquitto
-- [ ] Publication MQTT (paho-mqtt)
-- [ ] Traitements Edge et Cloud simulé
-- [ ] Stockage InfluxDB
-- [ ] Dashboards Grafana
-- [ ] Node-RED (facultatif)
-- [ ] Expériences et rapport
-
-## Indicateurs prévus
-
-Temps de traitement (ms), latence de bout en bout, débit (messages/s), taux de réception, moyenne et médiane sur plusieurs essais. Les résultats doivent provenir d'exécutions réelles.
+Voir `docs/TASKS.md`.
