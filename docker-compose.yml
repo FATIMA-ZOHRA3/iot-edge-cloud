@@ -1,84 +1,12 @@
-# Architecture à deux brokers :
-#   simulator -> mosquitto-edge (local) -> edge -> mosquitto-cloud -> cloud
-#
-# Scénario edge-cloud (par défaut) : EDGE_MODE=reduce  (flux réduit)
-# Scénario cloud-only              : EDGE_MODE=forward (tout est envoyé au Cloud)
-#
-# Semaine 2 : InfluxDB (bloc commenté en bas)   Semaine 3 : Grafana
+version: '3.8'
 
 services:
-  mosquitto-edge:
+  mosquitto:
     image: eclipse-mosquitto:2
+    container_name: mosquitto
     ports:
-      - "1883:1883"
+      - "1883:1883" # Port par défaut de MQTT
+      - "9001:9001" # Port pour WebSockets (optionnel, mais utile plus tard)
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-
-  mosquitto-cloud:
-    image: eclipse-mosquitto:2
-    ports:
-      - "1884:1883"
-    volumes:
-      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-
-  simulator:
-    build: ./simulator
-    environment:
-      MQTT_HOST: mosquitto-edge
-      MQTT_PORT: 1883
-      N_SENSORS: ${N_SENSORS:-1}
-      INTERVAL_SECONDS: ${INTERVAL_SECONDS:-2.0}
-    depends_on:
-      - mosquitto-edge
-
-  edge:
-    build: ./edge
-    environment:
-      LOCAL_HOST: mosquitto-edge
-      LOCAL_PORT: 1883
-      CLOUD_HOST: mosquitto-cloud
-      CLOUD_PORT: 1883
-      EDGE_MODE: ${EDGE_MODE:-reduce}
-      EDGE_BATCH: ${EDGE_BATCH:-5}
-    depends_on:
-      - mosquitto-edge
-      - mosquitto-cloud
-
-  cloud:
-    build: ./cloud
-    environment:
-      MQTT_HOST: mosquitto-cloud
-      MQTT_PORT: 1883
-      CLOUD_DELAY_SECONDS: ${CLOUD_DELAY_SECONDS:-0.2}
-    depends_on:
-      - mosquitto-cloud
-
-  # --- Semaine 2 : à activer (InfluxDB 2.x) ---
-  # influxdb:
-  #   image: influxdb:2
-  #   ports:
-  #     - "8086:8086"
-  #   environment:
-  #     DOCKER_INFLUXDB_INIT_MODE: setup
-  #     DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUX_USER}
-  #     DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUX_PASSWORD}
-  #     DOCKER_INFLUXDB_INIT_ORG: ${INFLUX_ORG}
-  #     DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUX_BUCKET}
-  #     DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUX_TOKEN}
-  #   volumes:
-  #     - influxdb-data:/var/lib/influxdb2
-
-  # --- Semaine 3 : à activer (Grafana) ---
-  # grafana:
-  #   image: grafana/grafana:latest
-  #   ports:
-  #     - "3000:3000"
-  #   volumes:
-  #     - grafana-data:/var/lib/grafana
-  #     - ./dashboard:/etc/grafana/dashboards
-  #   depends_on:
-  #     - influxdb
-
-# volumes:
-#   influxdb-data:
-#   grafana-data:
+    restart: unless-stopped
