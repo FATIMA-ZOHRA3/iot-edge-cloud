@@ -27,5 +27,6 @@ services:
     environment:
       MQTT_HOST: mosquitto
       EDGE_BATCH: 5
+      ALERT_THRESHOLD: 32.0
     depends_on:
-      - mosquitto    
+      - mosquitto

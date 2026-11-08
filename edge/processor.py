@@ -7,8 +7,10 @@ import paho.mqtt.client as mqtt
 # Configuration
 MQTT_HOST = os.getenv("MQTT_HOST", "mosquitto")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
-# On garde 1 message sur 5
+# On garde 1 message sur 5 par défaut
 EDGE_BATCH = int(os.getenv("EDGE_BATCH", "5")) 
+# Seuil d'alerte configurable (par défaut 32°C)
+ALERT_THRESHOLD = float(os.getenv("ALERT_THRESHOLD", "32.0"))
 
 TOPIC_IN = "iot/sensors/#"
 TOPIC_OUT = "iot/edge/results"
@@ -21,6 +23,7 @@ def utc_now() -> str:
 
 def on_connect(client, userdata, flags, reason_code, properties):
     print(f"Edge connecté à {MQTT_HOST}:{MQTT_PORT}")
+    print(f"Configuration : Filtre 1 sur {EDGE_BATCH} | Seuil d'alerte : {ALERT_THRESHOLD}°C")
     client.subscribe(TOPIC_IN, qos=1)
 
 def on_message(client, userdata, msg):
@@ -29,13 +32,18 @@ def on_message(client, userdata, msg):
         data = json.loads(msg.payload)
         message_count += 1
         
-        # LA FORCE DE L'EDGE : On filtre !
-        # Si le numéro du message n'est pas un multiple de 5, on s'arrête là (on ignore)
-        if message_count % EDGE_BATCH != 0:
+        temperature = float(data["temperature"])
+        
+        # --- LA RÈGLE MÉTIER (Alerte critique) ---
+        is_alert = temperature > ALERT_THRESHOLD
+        
+        # --- LA LOGIQUE DE FILTRE ---
+        # Si ce n'est pas un multiple du batch ET que ce n'est pas une alerte, on ignore le message.
+        # Sinon (si c'est le 5ème message OU si c'est une alerte), on continue.
+        if message_count % EDGE_BATCH != 0 and not is_alert:
             return 
         
-        # Si on passe ce filtre, c'est qu'on est au 5ème, 10ème, 15ème message...
-        # On le traite et on l'envoie au Cloud
+        # Si on arrive ici, on traite le message
         start = time.perf_counter()
         
         result = {
@@ -43,16 +51,23 @@ def on_message(client, userdata, msg):
             "sensor_id": data["sensor_id"],
             "source_timestamp": data["timestamp"],
             "processed_timestamp": utc_now(),
-            "temperature": data["temperature"],
+            "temperature": temperature,
+            "is_alert": is_alert, # On ajoute cette information
             "processing_ms": round((time.perf_counter() - start) * 1000, 2)
         }
         
         client.publish(TOPIC_OUT, json.dumps(result), qos=1)
-        print(f"[EDGE] Message n°{message_count} retenu et envoyé au Cloud : {result['temperature']}°C")
+        
+        # Affichage adapté dans les logs
+        if is_alert:
+            print(f"🚨 [EDGE] ALERTE CRITIQUE ({temperature}°C) ! Envoi immédiat (Message n°{message_count})")
+        else:
+            print(f"[EDGE] Message n°{message_count} retenu et envoyé au Cloud : {temperature}°C")
 
     except Exception as e:
         print(f"Erreur : {e}")
 
+# Initialisation du client MQTT
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="edge-processor")
 client.on_connect = on_connect
 client.on_message = on_message
