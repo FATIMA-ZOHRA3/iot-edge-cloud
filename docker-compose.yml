@@ -16,3 +16,16 @@ services:
       MQTT_HOST: mosquitto
     depends_on:
       - mosquitto  
+  cloud:
+    build: ./cloud
+    environment:
+      MQTT_HOST: mosquitto
+    depends_on:
+      - mosquitto    
+  edge:
+    build: ./edge
+    environment:
+      MQTT_HOST: mosquitto
+      EDGE_BATCH: 5
+    depends_on:
+      - mosquitto    
