@@ -30,3 +30,21 @@ services:
       ALERT_THRESHOLD: 32.0
     depends_on:
       - mosquitto
+  influxdb:
+    image: influxdb:2.7
+    container_name: influxdb
+    ports:
+      - "8086:8086"
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: admin
+      DOCKER_INFLUXDB_INIT_PASSWORD: motdepasse-iot-2026
+      DOCKER_INFLUXDB_INIT_ORG: ensah
+      DOCKER_INFLUXDB_INIT_BUCKET: iot
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: iot-token-dev
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+    restart: unless-stopped
+
+volumes:
+  influxdb-data:
