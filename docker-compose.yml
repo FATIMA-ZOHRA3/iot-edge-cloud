@@ -20,16 +20,26 @@ services:
     build: ./cloud
     environment:
       MQTT_HOST: mosquitto
+      INFLUX_URL: http://influxdb:8086
+      INFLUX_TOKEN: iot-token-dev
+      INFLUX_ORG: ensah
+      INFLUX_BUCKET: iot
     depends_on:
-      - mosquitto    
+      - mosquitto
+      - influxdb  
   edge:
     build: ./edge
     environment:
       MQTT_HOST: mosquitto
       EDGE_BATCH: 5
       ALERT_THRESHOLD: 32.0
+      INFLUX_URL: http://influxdb:8086
+      INFLUX_TOKEN: iot-token-dev
+      INFLUX_ORG: ensah
+      INFLUX_BUCKET: iot
     depends_on:
       - mosquitto
+      - influxdb
   influxdb:
     image: influxdb:2.7
     container_name: influxdb
