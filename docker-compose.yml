@@ -55,6 +55,20 @@ services:
     volumes:
       - influxdb-data:/var/lib/influxdb2
     restart: unless-stopped
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: motdepasse-iot-2026
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - influxdb
+    restart: unless-stopped
 
 volumes:
   influxdb-data:
+  grafana-data:
