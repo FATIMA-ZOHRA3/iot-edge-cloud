@@ -15,7 +15,9 @@ Exemples :
     python benchmark.py --duration 30
 """
 import argparse
+import csv
 import json
+import os
 import time
 from datetime import datetime, timezone
 
@@ -126,6 +128,15 @@ def parse_args() -> argparse.Namespace:
         parser.error("--duration doit être au moins 1")
     return args
 
+def export_to_csv(rows: list[dict], filename="results/benchmark.csv"):
+    """Exporte les résultats dans un fichier CSV."""
+    os.makedirs("results", exist_ok=True) # Crée le dossier results s'il n'existe pas
+    
+    with open(filename, mode='w', newline='', encoding='utf-8') as file:
+        writer = csv.DictWriter(file, fieldnames=["flux", "messages", "octets", "latence_moyenne_ms"])
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"\n✅ Résultats exportés avec succès dans {filename}")
 
 def main() -> None:
     args = parse_args()
@@ -144,7 +155,12 @@ def main() -> None:
     finally:
         client.loop_stop()
         client.disconnect()
+     # On récupère les résultats
+    resultats = summarize()    
     print_report(summarize(), time.monotonic() - start)
+     # On les exporte en CSV 
+    export_to_csv(resultats)
+
 
 
 if __name__ == "__main__":
