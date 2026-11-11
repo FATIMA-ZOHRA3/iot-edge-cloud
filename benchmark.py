@@ -1,111 +1,150 @@
-"""Benchmark : observe les deux brokers pendant DURATION secondes.
+"""Benchmark : compare le flux brut des capteurs, le flux Cloud et le flux Edge.
 
-Les services doivent déjà tourner (docker compose up -d). Pour chaque flux :
-nombre de messages, débit, octets et latence moyenne (heure de réception moins
-heure d'émission d'origine). Un CSV est écrit dans results/.
+Le script écoute les trois flux MQTT pendant une durée donnée, puis affiche
+pour chacun :
+  - le nombre de messages ;
+  - le nombre d'octets reçus ;
+  - la latence moyenne (heure de réception - heure d'émission de la mesure).
 
-Flux observés :
-  sensors        mesures brutes (broker local)
-  edge_local     décisions locales de l'Edge (broker local)
-  uplink         ce qui traverse le lien Edge -> Cloud (broker Cloud) = bande passante
-  cloud_results  résultats finaux du Cloud (broker Cloud) = latence de bout en bout
+Les services doivent déjà tourner (docker compose up -d). Le délai du Cloud
+est ARTIFICIEL : il est inclus dans sa latence et doit être signalé comme tel
+dans le rapport.
 
-Usage : python benchmark.py [durée_en_secondes] [étiquette]
-  ex.  : python benchmark.py 120 edge-cloud-5-capteurs
-
-Variables : LOCAL_HOST, LOCAL_PORT (1883), CLOUD_HOST, CLOUD_PORT (1884).
+Exemples :
+    python benchmark.py
+    python benchmark.py --duration 30
 """
-import csv
+import argparse
 import json
-import os
-import sys
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 
 import paho.mqtt.client as mqtt
 
-LOCAL = (os.getenv("LOCAL_HOST", "localhost"), int(os.getenv("LOCAL_PORT", "1883")))
-CLOUD = (os.getenv("CLOUD_HOST", "localhost"), int(os.getenv("CLOUD_PORT", "1884")))
-DURATION = int(sys.argv[1]) if len(sys.argv) > 1 else 120
-LABEL = sys.argv[2] if len(sys.argv) > 2 else "essai"
+DEFAULT_DURATION = 120  # secondes
 
-# (flux, broker, filtre de topic, champs possibles pour l'heure d'émission d'origine)
-STREAMS = [
-    ("sensors", "local", "iot/sensors/#", ("timestamp",)),
-    ("edge_local", "local", "iot/edge/local", ("timestamp",)),
-    ("uplink", "cloud", "iot/uplink/#", ("source_timestamp", "timestamp")),
-    ("cloud_results", "cloud", "iot/cloud/results", ("source_timestamp",)),
-]
-stats = {name: {"messages": 0, "bytes": 0, "latencies": []} for name, *_ in STREAMS}
+# Nom du flux -> topic écouté
+STREAM_TOPICS = {
+    "capteurs": "iot/sensors/#",
+    "cloud": "iot/cloud/results",
+    "edge": "iot/edge/results",
+}
+
+# Compteurs par flux, remplis par on_message
+stats = {
+    name: {"messages": 0, "bytes": 0, "latencies_ms": []}
+    for name in STREAM_TOPICS
+}
 
 
-def make_client(broker):
-    def on_connect(client, userdata, flags, reason_code, properties):
-        for _, b, topic, _ in STREAMS:
-            if b == broker:
-                client.subscribe(topic, qos=1)
+def stream_of(topic: str) -> str | None:
+    """Retourne le flux auquel appartient un topic (None si inconnu)."""
+    if topic.startswith("iot/sensors/"):
+        return "capteurs"
+    if topic == "iot/cloud/results":
+        return "cloud"
+    if topic == "iot/edge/results":
+        return "edge"
+    return None
 
-    def on_message(client, userdata, msg):
-        received = datetime.now(timezone.utc)
-        for name, b, topic, fields in STREAMS:
-            if b == broker and mqtt.topic_matches_sub(topic, msg.topic):
-                entry = stats[name]
-                entry["messages"] += 1
-                entry["bytes"] += len(msg.payload)
-                try:
-                    obj = json.loads(msg.payload)
-                    field = next(f for f in fields if f in obj)
-                    sent = datetime.fromisoformat(obj[field])
-                    entry["latencies"].append((received - sent).total_seconds() * 1000)
-                except (ValueError, StopIteration, TypeError):
-                    pass
 
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"benchmark-{broker}")
+def latency_ms(payload: bytes, received_at: datetime) -> float | None:
+    """Latence en ms entre l'émission de la mesure et sa réception.
+
+    Retourne None si le message n'a pas d'horodatage exploitable.
+    """
+    try:
+        data = json.loads(payload)
+        sent_at = datetime.fromisoformat(data.get("source_timestamp") or data["timestamp"])
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None
+    return (received_at - sent_at).total_seconds() * 1000
+
+
+def on_connect(client, userdata, flags, reason_code, properties):
+    """S'abonne aux trois flux dès que la connexion est établie."""
+    if reason_code.is_failure:
+        print(f"Connexion refusée : {reason_code}")
+        return
+    for topic in STREAM_TOPICS.values():
+        client.subscribe(topic)
+
+
+def on_message(client, userdata, msg):
+    """Enregistre un message dans les compteurs de son flux."""
+    received_at = datetime.now(timezone.utc)
+    name = stream_of(msg.topic)
+    if name is None:
+        return
+    stream = stats[name]
+    stream["messages"] += 1
+    stream["bytes"] += len(msg.payload)
+    latency = latency_ms(msg.payload, received_at)
+    if latency is not None:
+        stream["latencies_ms"].append(latency)
+
+
+def summarize() -> list[dict]:
+    """Résume les compteurs : une ligne par flux."""
+    rows = []
+    for name, stream in stats.items():
+        latencies = stream["latencies_ms"]
+        rows.append({
+            "flux": name,
+            "messages": stream["messages"],
+            "octets": stream["bytes"],
+            "latence_moyenne_ms": round(sum(latencies) / len(latencies), 1) if latencies else None,
+        })
+    return rows
+
+
+def print_report(rows: list[dict], elapsed: float) -> None:
+    """Affiche le tableau des résultats."""
+    print(f"\nRésultats sur {elapsed:.0f} s")
+    print(f"{'flux':<10}{'messages':>10}{'octets':>10}{'latence moy. (ms)':>20}")
+    for row in rows:
+        latency = "-" if row["latence_moyenne_ms"] is None else row["latence_moyenne_ms"]
+        print(f"{row['flux']:<10}{row['messages']:>10}{row['octets']:>10}{latency:>20}")
+
+    sensors = next(r for r in rows if r["flux"] == "capteurs")["messages"]
+    if sensors:
+        for row in rows:
+            if row["flux"] != "capteurs":
+                share = 100 * row["messages"] / sensors
+                print(f"{row['flux']} : {share:.0f} % des messages des capteurs")
+
+
+def parse_args() -> argparse.Namespace:
+    """Lit les options de la ligne de commande."""
+    parser = argparse.ArgumentParser(description="Benchmark des flux MQTT")
+    parser.add_argument("--duration", type=int, default=DEFAULT_DURATION,
+                        help="durée de mesure en secondes (défaut : 120)")
+    parser.add_argument("--host", default="localhost", help="adresse du broker")
+    parser.add_argument("--port", type=int, default=1883, help="port du broker")
+    args = parser.parse_args()
+    if args.duration < 1:
+        parser.error("--duration doit être au moins 1")
+    return args
+
+
+def main() -> None:
+    args = parse_args()
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="benchmark")
     client.on_connect = on_connect
     client.on_message = on_message
-    return client
+    client.connect(args.host, args.port, keepalive=60)
 
-
-def main():
-    clients = []
-    for broker, (host, port) in (("local", LOCAL), ("cloud", CLOUD)):
-        client = make_client(broker)
-        client.connect(host, port, 60)
-        client.loop_start()
-        clients.append(client)
-    print(f"Mesure pendant {DURATION} s ({LABEL})...")
-    time.sleep(DURATION)
-    for client in clients:
+    print(f"Mesure pendant {args.duration} s (Ctrl+C pour arrêter plus tôt)...")
+    start = time.monotonic()
+    client.loop_start()
+    try:
+        time.sleep(args.duration)
+    except KeyboardInterrupt:
+        print("Arrêt demandé, résultats partiels.")
+    finally:
         client.loop_stop()
         client.disconnect()
-
-    rows = []
-    for name, *_ in STREAMS:
-        entry = stats[name]
-        lat = entry["latencies"]
-        rows.append({
-            "label": LABEL,
-            "stream": name,
-            "duration_s": DURATION,
-            "messages": entry["messages"],
-            "messages_per_s": round(entry["messages"] / DURATION, 3),
-            "bytes": entry["bytes"],
-            "avg_latency_ms": round(sum(lat) / len(lat), 2) if lat else "",
-        })
-
-    Path("results").mkdir(exist_ok=True)
-    out = Path("results") / f"benchmark_{LABEL}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    with open(out, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0]))
-        writer.writeheader()
-        writer.writerows(rows)
-    for row in rows:
-        print(row)
-    raw, up = stats["sensors"]["bytes"], stats["uplink"]["bytes"]
-    if raw and up:
-        print(f"Octets sur le lien Edge->Cloud : {up} soit {up / raw:.0%} du volume brut des capteurs")
-    print("CSV écrit :", out)
+    print_report(summarize(), time.monotonic() - start)
 
 
 if __name__ == "__main__":
