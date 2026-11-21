@@ -1,103 +1,160 @@
 # IoT Edge–Cloud avec capteurs simulés
 
-Comparaison de deux chemins pour des mesures de capteurs simulés :
+Plateforme qui compare deux manières de traiter des mesures de capteurs :
 
-- **A, cloud-only** : l'Edge relaie tout au Cloud.
-- **B, edge-cloud** : l'Edge décide localement et n'envoie au Cloud qu'un flux réduit.
+- **Cloud** : chaque mesure est traitée par un service distant (délai simulé).
+- **Edge** : un service local filtre les mesures et déclenche lui-même les alertes.
 
-Tout tourne dans des conteneurs Docker, avec deux brokers MQTT (un local, un « cloud »).
+Tout tourne dans des conteneurs Docker, avec un broker MQTT, une base InfluxDB et un tableau de bord Grafana.
 
-> Le délai du Cloud est **artificiel** : il doit être signalé comme tel dans tous les résultats.
+> Le délai du Cloud (0,2 s par mesure) est **artificiel** : il simule un lien et un traitement distants. Il doit être signalé comme tel dans tous les résultats.
 
-## Structure
+## Architecture
 
+```mermaid
+flowchart LR
+    S["Simulateur de capteurs"]
+    M[("Mosquitto<br/>MQTT")]
+    E["Edge<br/>1 mesure sur 5 + alerte"]
+    C["Cloud simulé<br/>délai 0,2 s + moyenne"]
+    I[("InfluxDB")]
+    G["Grafana"]
+
+    S -- "iot/sensors/id" --> M
+    M --> E
+    M --> C
+    E -- "iot/edge/results" --> M
+    C -- "iot/cloud/results" --> M
+    E -- "scenario=edge" --> I
+    C -- "scenario=cloud" --> I
+    I --> G
 ```
-simulator/            capteurs simulés (sensors.py)
-edge/                 service Edge (processor.py)
-cloud/                service Cloud simulé (consumer.py)
-dashboard/            dashboards Grafana exportés (JSON)
-docs/                 architecture, plan de travail, rapport
-results/              mesures des tests (CSV, non versionnés)
-benchmark.py          mesure messages, octets et latence sur les deux brokers
-docker-compose.yml    brokers et services
-mosquitto.conf        configuration des brokers (essais locaux uniquement)
-.env.example          variables à copier dans .env
-```
 
-Voir `docs/ARCHITECTURE.md` (schéma, topics, formats) et `docs/TASKS.md` (plan sur 4 semaines).
+Les services Edge et Cloud reçoivent les mêmes mesures en parallèle, ce qui rend la comparaison équitable. Ils sont dans des conteneurs séparés : on peut couper l'un sans toucher à l'autre.
 
 ## Prérequis
 
-Docker (avec Docker Compose), Python 3, Git.
+- Docker avec Docker Compose
+- Git
+- Python 3 (seulement pour `benchmark.py` et `coupure.py`)
 
 ## Démarrage
 
 ```bash
+git clone https://github.com/FATIMA-ZOHRA3/iot-edge-cloud.git
+cd iot-edge-cloud
 docker compose up -d --build
 docker compose ps
-docker compose logs -f edge cloud
 ```
 
-Cinq services : `mosquitto-edge`, `mosquitto-cloud`, `simulator`, `edge`, `cloud`.
-Arrêter : `docker compose down`.
+Six services doivent être `running` : `mosquitto`, `influxdb`, `grafana`, `simulator`, `cloud`, `edge`.
 
-### Choisir le scénario
+| Service | Adresse | Identifiants (développement uniquement) |
+|---------|---------|----------------------------------------|
+| Grafana | http://localhost:3000 | `admin` / `motdepasse-iot-2026` |
+| InfluxDB | http://localhost:8086 | `admin` / `motdepasse-iot-2026` |
+| MQTT | `localhost:1883` | sans authentification |
 
-Scénario B, edge-cloud (par défaut) :
+Arrêter : `docker compose down` (les données d'InfluxDB et de Grafana sont conservées dans des volumes).
+
+> Ces identifiants servent uniquement aux essais en local. Ne les réutilise pas ailleurs.
+
+## Tableau de bord Grafana
+
+Le dashboard **IoT Edge vs Cloud** est chargé automatiquement au démarrage : ouvrir http://localhost:3000 puis **Dashboards**. Il contient trois panneaux :
+
+1. **Latence de traitement** Edge et Cloud, en ms (échelle logarithmique).
+2. **Débit** en messages par seconde.
+3. **Température** en temps réel, avec le seuil d'alerte de 32 °C.
+
+La source de données et le dashboard sont décrits dans `grafana/provisioning/` et `dashboard/`.
+
+## Voir les messages MQTT
 
 ```bash
-docker compose up -d
+docker compose exec mosquitto mosquitto_sub -h localhost -t "iot/#" -v
 ```
 
-Scénario A, cloud-only :
+| Topic | Contenu |
+|-------|---------|
+| `iot/sensors/<id>` | mesure brute d'un capteur |
+| `iot/edge/results` | mesure retenue par l'Edge et indicateur d'alerte |
+| `iot/cloud/results` | moyenne glissante calculée par le Cloud |
 
-```powershell
-$env:EDGE_MODE="forward"; docker compose up -d --force-recreate edge
-```
+## Configuration
 
-(Linux ou macOS : `EDGE_MODE=forward docker compose up -d --force-recreate edge`.)
-Pour revenir au scénario B : `$env:EDGE_MODE="reduce"` puis la même commande.
+Les réglages sont lus dans les variables d'environnement des services (`docker-compose.yml`).
 
-Nombre de capteurs, délai Cloud, taille des groupes : copier `.env.example` en `.env`
-et modifier `N_SENSORS`, `CLOUD_DELAY_SECONDS`, `EDGE_BATCH`.
+| Variable | Service | Rôle | Défaut |
+|----------|---------|------|--------|
+| `N_SENSORS` | simulator | nombre de capteurs | 1 |
+| `INTERVAL_SECONDS` | simulator | secondes entre deux mesures | 2 |
+| `CLOUD_DELAY_SECONDS` | cloud | délai artificiel | 0,2 |
+| `WINDOW_SIZE` | cloud | taille de la moyenne glissante | 10 |
+| `EDGE_BATCH` | edge | 1 mesure conservée sur N | 5 |
+| `ALERT_THRESHOLD` | edge | seuil d'alerte (°C) | 32 |
 
-### Voir les messages
+## Benchmark
 
-```bash
-docker compose exec mosquitto-edge mosquitto_sub -h localhost -t "iot/#" -v
-docker compose exec mosquitto-cloud mosquitto_sub -h localhost -t "iot/#" -v
-```
-
-### Benchmark
+Mesure, pendant une durée donnée, le nombre de messages, les octets et la latence moyenne de chaque flux.
 
 ```bash
 python -m pip install -r requirements.txt
-python benchmark.py 120 edge-cloud-1-capteur
+python benchmark.py --duration 120
 ```
 
-Les services doivent tourner. Un CSV est écrit dans `results/`. Lancer le même test
-dans chaque scénario, avec 1, 5 puis 10 capteurs.
+Les services doivent tourner. Le résultat est affiché et écrit dans `results/benchmark.csv` (dossier non versionné).
 
-### Scénario de coupure du Cloud
+Le tableau des essais avec 1, 5 et 10 capteurs est dans `docs/resultats_charge.csv`.
+
+| Capteurs | Flux | Messages | Octets | Latence moyenne (ms) |
+|---------:|------|---------:|-------:|---------------------:|
+| 1 | cloud | 60 | 13 907 | 212,3 |
+| 1 | edge | 17 | 3 818 | 11,9 |
+| 5 | cloud | 300 | 69 539 | 633,5 |
+| 5 | edge | 98 | 21 991 | 26,7 |
+| 10 | cloud | 571 | 132 338 | 4 912,4 |
+| 10 | edge | 208 | 46 664 | 44,0 |
+
+À 10 capteurs, le Cloud sature : il traite un message à la fois avec un délai de 0,2 s, soit 5 messages par seconde au maximum.
+
+## Scénario de coupure du Cloud
 
 ```bash
-docker compose stop mosquitto-cloud
-docker compose logs -f edge
-docker compose start mosquitto-cloud
+python coupure.py --duree 60
 ```
 
-En mode `reduce`, l'Edge continue ses décisions locales (`iot/edge/local`), garde les
-messages du lien montant en mémoire et les envoie à la reconnexion.
+Le script arrête le service Cloud pendant la durée indiquée, puis le relance. Pendant la coupure, l'Edge continue de traiter les mesures et d'écrire dans InfluxDB, alors que le Cloud n'écrit plus rien (voir `docs/coupure-influxdb.png`). Les mesures émises pendant la coupure ne sont pas rattrapées par le Cloud.
 
-### Développer hors Docker
+Équivalent manuel : `docker compose stop cloud`, puis `docker compose start cloud`.
 
-```bash
-docker compose up -d mosquitto-edge mosquitto-cloud
-python simulator/sensors.py
+## Structure du dépôt
+
+```
+simulator/        capteurs simulés (sensors.py) et publication MQTT (publisher.py)
+edge/             service Edge (processor.py)
+cloud/            service Cloud simulé (consumer.py)
+grafana/          configuration automatique de Grafana (source InfluxDB, dashboards)
+dashboard/        dashboard Grafana au format JSON
+docs/             rapport, schéma d'architecture, captures et tableau des résultats
+results/          mesures du benchmark (CSV, non versionnés)
+benchmark.py      messages, octets et latence par flux
+coupure.py        simulation d'une coupure du Cloud
+docker-compose.yml  tous les services
+mosquitto.conf    configuration du broker (essais locaux uniquement)
 ```
 
-(dans d'autres terminaux : `python edge/processor.py` et `python cloud/consumer.py`)
+## Limites
 
-## Avancement
+- Les capteurs sont **simulés**, avec des valeurs tirées au hasard.
+- Le **délai du Cloud est artificiel** et son traitement est séquentiel.
+- Un seul broker MQTT sert aux deux chemins, sur une seule machine : les valeurs absolues ne sont pas celles d'un déploiement réel, seuls les écarts entre Edge et Cloud sont significatifs.
+- Chaque essai du benchmark est une mesure unique de 2 minutes.
 
-Voir `docs/TASKS.md`.
+## Rapport
+
+Voir `docs/` : `RAPPORT_partie_A.md` (introduction, problématique, architecture, choix techniques) et son PDF.
+
+## Auteurs
+
+Projet réalisé par Fatima Zohra (Dev A) et Safaa (Dev B), ENSAH.
