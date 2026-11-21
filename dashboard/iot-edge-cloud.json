@@ -8,7 +8,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "5s",
   "time": {
     "from": "now-15m",
@@ -50,7 +50,8 @@
             "scaleDistribution": {
               "type": "log",
               "log": 10
-            }
+            },
+            "spanNulls": false
           }
         },
         "overrides": []
@@ -96,7 +97,8 @@
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 8,
-            "showPoints": "never"
+            "showPoints": "never",
+            "spanNulls": false
           }
         },
         "overrides": []
@@ -145,7 +147,8 @@
             "showPoints": "never",
             "thresholdsStyle": {
               "mode": "line"
-            }
+            },
+            "spanNulls": false
           },
           "thresholds": {
             "mode": "absolute",
